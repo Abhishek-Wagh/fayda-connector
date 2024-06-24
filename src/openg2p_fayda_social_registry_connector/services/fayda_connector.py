@@ -8,13 +8,17 @@ from openg2p_fastapi_common.utils.ctx_thread import CTXThread
 from fayda_mock.controllers.fayda_number_controller import FaydaNumberController
 from ..config import Settings
 from datetime import datetime, timedelta
-import ssl
-import xmlrpc.client
+
 
 _config = Settings.get_config()
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
 _logger = logging.getLogger(_config.logging_default_logger_name)
-config_dict = _config.model_dump()
+
+# Added a separate logger for debug level
+_debug_logger = logging.getLogger(f"{_config.logging_default_logger_name}.debug")
+_debug_logger.setLevel(logging.DEBUG)
 
 
 class FaydaIdConnectorService(BaseService):
@@ -36,22 +40,19 @@ class FaydaIdConnectorService(BaseService):
     def run_task(self):
         _logger.info("Running task at %s", time.ctime())
         # Step1 : call the fetch registration ids toget the ids
-        # Odoo server details
-        # ODOO_URL = 'https://localhost:8069'
-        # ODOO_DB = 'fayda-new'
-        # ODOO_USERNAME = 'admin'
-        # ODOO_PASSWORD = 'admin'
-        # # XML-RPC endpoints
-        # COMMON_ENDPOINT = f'{ODOO_URL}/xmlrpc/2/common'
-        # common = xmlrpc.client.ServerProxy(COMMON_ENDPOINT)
-        # context = ssl._create_unverified_context()
-        # common = xmlrpc.client.ServerProxy(COMMON_ENDPOINT, context=context)
-        # print("@@@@@@@@@@@", common.version())
-        # uid = common.authenticate(ODOO_DB, ODOO_USERNAME, ODOO_PASSWORD, {})
-        # print("########", uid)
-        # if uid:
-        registration_ids = self.fetch_registration_ids()
 
+        auth_res = httpx.request("GET",_config.openg2p_authenticate_api_url, json={
+                "jsonrpc": "2.0",
+                "params": {
+                    "db": _config.openg2p_authenticate_database,
+                    "login": _config.openg2p_authenticate_username,
+                    "password": _config.openg2p_authenticate_password
+                }
+            })
+        auth_res.raise_for_status()
+        registration_ids = self.fetch_registration_ids(auth_cookies=auth_res.cookies)
+        _logger.info(f"Fetched {len(registration_ids)} registration IDs.")
+        _debug_logger.debug(f"Fetched registration IDs: {registration_ids}")
         if registration_ids:
             # Step 2: Call the Fayda number API with the registration IDs
             request_data = {
@@ -62,20 +63,20 @@ class FaydaIdConnectorService(BaseService):
             }
 
             fayda_response = self.call_fayda_number_api(request_data)
+            if fayda_response:
+                _logger.info(f"Found {len(fayda_response['response'])} records from Fayda number API.")
+                _debug_logger.debug(f"Fayda number API response: {fayda_response}")
 
-            # Step 3: Transform and call the update API with the response
-            self.update_fayda_number_status(fayda_response)
-
+                # Step 3: Transform and call the update API with the response
+                self.update_fayda_number_status(fayda_response, auth_cookies=auth_res.cookies)
         _logger.info("Task completed at %s", time.ctime())
 
-    def fetch_registration_ids(self) -> List[str]:
-        reg_id_url = config_dict.get(
-                    "reg_ids_api", None
-                )
-        params = {"include_id_type": "rid", "exclude_id_type": "UIN"}
+    def fetch_registration_ids(self,auth_cookies=None) -> List[str]:
+        reg_id_url = _config.reg_ids_api_url
+        params = {"include_id_type": _config.include_id_type, "exclude_id_type": _config.exclude_id_type}
         try:
 
-            response = httpx.get(reg_id_url, params=params, cookies={"session_id": "dc8a5fa2269aa982b9e0e1dc3f046bd7a286c7da"})
+            response = httpx.get(reg_id_url, params=params, cookies=auth_cookies)
             response.raise_for_status()
             data = response.json()
             return data
@@ -84,14 +85,11 @@ class FaydaIdConnectorService(BaseService):
             return []
 
     def call_fayda_number_api(self, request):
-        get_fayda_number_url = config_dict.get(
-                    "get_fayda_number_api", None
-                )
+        get_fayda_number_url = _config.get_fayda_number_api_url
         try:
             response = httpx.post(get_fayda_number_url, json=request)
             response.raise_for_status()
             data = response.json()
-            print("!!!!!!!!!!!!!!!!!", data)
             return data
         except httpx.HTTPError as e:
             _logger.error(f"Failed to call Fayda number API: {e}")
@@ -140,20 +138,19 @@ class FaydaIdConnectorService(BaseService):
 
         return transformed_data
 
-    def update_fayda_number_status(self, response):
+    def update_fayda_number_status(self, response, auth_cookies=None):
         transformed_data = self.transform_response(response)
         if not transformed_data:
             _logger.info("No processed entries to update.")
             return
 
-        update_partner= config_dict.get(
-                    "update_partner_using_rid", None
-                )
-        params = {"id_type": "rid"}
+        update_partner= _config.update_individual_api_url
+        params = {"id_type": _config.id_type}
         try:
-            response = httpx.put(update_partner, json=transformed_data, params=params, cookies={"session_id": "dc8a5fa2269aa982b9e0e1dc3f046bd7a286c7da"})
+            response = httpx.put(update_partner, json=transformed_data, params=params, cookies=auth_cookies)
             response.raise_for_status()
-            _logger.info(f"Successfully updated Fayda number status: {response.json()}")
+            _logger.info(f"Successfully updated {len(transformed_data)} Fayda number records.")
+            _debug_logger.debug(f"Updated records: {transformed_data}")
         except httpx.HTTPError as e:
             _logger.error(f"Failed to update Fayda number status: {e}")
 
