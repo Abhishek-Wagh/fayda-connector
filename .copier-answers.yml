@@ -1,0 +1,16 @@
+# Do NOT update manually; changes here will be overwritten by Copier
+_commit: af08ec1
+_src_path: https://github.com/openg2p/openg2p-fastapi-template
+github_ci_docker_build: true
+github_ci_openapi_publish: false
+github_ci_precommit: true
+github_ci_pypi_publish: false
+github_ci_tests: true
+github_ci_tests_codecov: false
+module_name: openg2p_fayda_social_registry_connector
+org_name: OpenG2P
+org_slug: OpenG2P
+package_name: openg2p-fayda-social-registry-connector
+repo_name: OpenG2P Fayda Social Registry Connector
+repo_slug: openg2p-fayda-social-registry-connector
+
